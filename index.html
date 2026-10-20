@@ -74,6 +74,9 @@ tr.detail dt{color:var(--muted)}tr.detail dd{margin:0;color:var(--ink)}
 .flag{display:inline-block;padding:0 6px;margin:0 4px 2px 0;border-radius:4px;font-size:11px;white-space:nowrap;font-weight:600}
 .f-crit{background:var(--crit-bg);color:var(--crit)}.f-warn{background:var(--warn-bg);color:var(--warn-ink)}.f-info{background:var(--hover);color:var(--ink2)}
 .muted{color:var(--muted)}
+#chart-next .brow{grid-template-columns:128px 1fr 36px}
+.ncat{display:inline-block;padding:0 6px;margin-right:6px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap;background:var(--hover);color:var(--ink2)}
+.ncat.p1{background:var(--crit-bg);color:var(--crit)}.ncat.p2{background:var(--warn-bg);color:var(--warn-ink)}
 .late{color:var(--crit);font-weight:600}
 .empty{padding:32px;text-align:center;color:var(--muted)}
 #tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--surface);padding:6px 9px;border-radius:6px;font-size:12px;display:none;z-index:9;white-space:nowrap}
@@ -105,6 +108,9 @@ tr.detail dt{color:var(--muted)}tr.detail dd{margin:0;color:var(--ink)}
     <h2>分類別 件数</h2>
     <div class="hint">バーの色は対応状況（凡例は左と共通）。行クリックで分類を絞り込み</div>
     <div id="chart-cat"></div>
+    <h2 style="margin-top:14px">次の対応 カテゴリ別 件数（未完了）</h2>
+    <div class="hint">上から優先度の高い順。行クリックでカテゴリを絞り込み</div>
+    <div id="chart-next"></div>
   </div>
 </section>
 
@@ -115,6 +121,7 @@ tr.detail dt{color:var(--muted)}tr.detail dd{margin:0;color:var(--ink)}
     <select id="f-status" aria-label="対応状況"></select>
     <select id="f-cat" aria-label="分類"></select>
     <select id="f-owner" aria-label="担当者"></select>
+    <select id="f-next" aria-label="次の対応カテゴリ"></select>
     <select id="f-flag" aria-label="注意"></select>
     <input type="search" id="f-q" placeholder="ID・顧客・内容で検索" aria-label="検索">
     <button id="reset">条件をクリア</button>
@@ -133,6 +140,18 @@ const RAW = [{"問い合わせID": "Q001", "問い合わせ日時": "2026-10-12 
 const STATUSES=[["未着手","todo"],["対応中","doing"],["顧客回答待ち","wait"],["完了","done"]];
 const SCLS=Object.fromEntries(STATUSES);
 const FLAGS={overdue:"期限超過",today:"本日期限",decision:"判断待ち",noowner:"担当未設定",nextlate:"次回対応が遅れ"};
+/* 次の対応のカテゴリ（配列の順＝優先度の高い順、p は表示色の強さ） */
+const NEXT_CATS=[
+  {n:"社内判断待ち",p:1,m:t=>/管理職|方針/.test(t)},
+  {n:"未定（要設定）",p:1,m:t=>!t},
+  {n:"顧客へ回答・連絡",p:2,m:t=>/連絡/.test(t)},
+  {n:"案内・資料送付",p:3,m:t=>/案内|送付/.test(t)},
+  {n:"回答待ちフォロー",p:3,m:t=>/回答状況/.test(t)},
+  {n:"社内で確認・調査",p:3,m:t=>/照合|調査|確認/.test(t)},
+  {n:"その他",p:3,m:()=>true}
+];
+const NCI=Object.fromEntries(NEXT_CATS.map((c,i)=>[c.n,i]));
+const nextCat=r=>r["対応状況"]==="完了"?"":NEXT_CATS.find(c=>c.m(r["次の対応"]||"")).n;
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const pad=n=>String(n).padStart(2,"0");
@@ -142,14 +161,14 @@ const uniq=k=>[...new Set(RAW.map(r=>r[k]).filter(Boolean))];
 const CATS=uniq("問い合わせ分類"), OWNERS=uniq("担当者");
 
 let base=todayStr();
-let F={status:"open",cat:"",owner:"",flag:"",q:""};
+let F={status:"open",cat:"",owner:"",next:"",flag:"",q:""};
 let sort={key:"due",dir:1};
 
 function enrich(){
   RAW.forEach(r=>{
     const open=r["対応状況"]!=="完了";
     const due=d10(r["対応期限"]), nx=d10(r["次回対応予定日"]);
-    r._open=open;
+    r._open=open;r._nc=nextCat(r);
     r._f={
       overdue:open&&due&&due<base,
       today:open&&due===base,
@@ -166,6 +185,7 @@ function match(r,skip){
   }
   if(skip!=="cat"&&F.cat&&r["問い合わせ分類"]!==F.cat)return false;
   if(skip!=="owner"&&F.owner&&(F.owner==="(未設定)"?r["担当者"]:r["担当者"]!==F.owner))return false;
+  if(skip!=="next"&&F.next&&r._nc!==F.next)return false;
   if(skip!=="flag"&&F.flag&&!r._f[F.flag])return false;
   if(F.q){const t=[r["問い合わせID"],r["顧客名"],r["問い合わせ内容"],r["次の対応"]].join(" ").toLowerCase();if(!t.includes(F.q.toLowerCase()))return false}
   return true;
@@ -187,7 +207,7 @@ function renderKpis(){
   $("kpis").innerHTML=items.map((it,i)=>{
     const on=Object.entries(it.set).every(([k,v])=>F[k]===v);
     return `<button class="kpi${it.alert&&it.v?" alert":""}" data-i="${i}" aria-pressed="${on}"><div class="l">${it.l}</div><div class="v">${it.v}</div><div class="n">${it.n}</div></button>`}).join("");
-  $("kpis").querySelectorAll(".kpi").forEach(b=>b.onclick=()=>{Object.assign(F,{cat:"",owner:"",q:""},items[b.dataset.i].set);$("f-q").value="";sync()});
+  $("kpis").querySelectorAll(".kpi").forEach(b=>b.onclick=()=>{Object.assign(F,{cat:"",owner:"",next:"",q:""},items[b.dataset.i].set);$("f-q").value="";sync()});
 }
 
 /* ---------- Charts ---------- */
@@ -195,14 +215,14 @@ function bar(counts,w){
   return `<div class="bar">`+STATUSES.filter(([s])=>counts[s]).map(([s,c])=>
     `<div class="seg s-${c}" style="flex:${counts[s]} 1 0" data-tip="${esc(s)}：${counts[s]}件">${counts[s]}</div>`).join("")+`</div>`;
 }
-function rows(el,key,names,fk){
-  const max=Math.max(...names.map(n=>RAW.filter(r=>(r[key]||"(未設定)")===n).length));
+function rows(el,key,names,fk,src=RAW){
+  const max=Math.max(...names.map(n=>src.filter(r=>(r[key]||"(未設定)")===n).length));
   $(el).innerHTML=names.map(n=>{
-    const sub=RAW.filter(r=>(r[key]||"(未設定)")===n);
+    const sub=src.filter(r=>(r[key]||"(未設定)")===n);
     const cnt={};sub.forEach(r=>cnt[r["対応状況"]]=(cnt[r["対応状況"]]||0)+1);
     return `<div class="brow${F[fk]===n?" sel":""}" data-v="${esc(n)}" tabindex="0" role="button" aria-label="${esc(n)} ${sub.length}件"><span class="name" title="${esc(n)}">${esc(n)}</span><div style="width:${sub.length/max*100}%">${bar(cnt)}</div><span class="tot">${sub.length}</span></div>`}).join("");
   $(el).querySelectorAll(".brow").forEach(b=>{
-    const go=()=>{F[fk]=F[fk]===b.dataset.v?"":b.dataset.v;if(F.status==="open")F.status="all";sync()};
+    const go=()=>{F[fk]=F[fk]===b.dataset.v?"":b.dataset.v;if(fk!=="next"&&F.status==="open")F.status="all";sync()};
     b.onclick=go;b.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();go()}};
   });
 }
@@ -215,6 +235,8 @@ function renderCharts(){
   rows("chart-cat","問い合わせ分類",byCount("問い合わせ分類",CATS),"cat");
   const ow=[...OWNERS];if(RAW.some(r=>!r["担当者"]))ow.push("(未設定)");
   rows("chart-owner","担当者",byCount("担当者",ow),"owner");
+  const openRows=RAW.filter(r=>r._open);
+  rows("chart-next","_nc",NEXT_CATS.map(c=>c.n).filter(n=>openRows.some(r=>r._nc===n)),"next",openRows);
 }
 
 /* ---------- Table ---------- */
@@ -222,7 +244,7 @@ const COLS=[
   ["id","ID",r=>r["問い合わせID"]],["recv","問い合わせ日",r=>d10(r["問い合わせ日時"])],["cust","顧客",r=>r["顧客名"]],
   ["cat","分類",r=>r["問い合わせ分類"]],["body","内容",r=>r["問い合わせ内容"]],["owner","担当者",r=>r["担当者"]||"￿"],
   ["status","状況",r=>STATUSES.findIndex(s=>s[0]===r["対応状況"])],["due","対応期限",r=>d10(r["対応期限"])],
-  ["next","次の対応",r=>r["次の対応"]||"￿"],["nextd","次回予定日",r=>d10(r["次回対応予定日"])||"￿"],["flags","注意",r=>Object.keys(FLAGS).filter(k=>r._f[k]).length*-1]
+  ["next","次の対応",r=>r._nc?String(NCI[r._nc]).padStart(2,"0")+(r["次の対応"]||""):"￿"],["nextd","次回予定日",r=>d10(r["次回対応予定日"])||"￿"],["flags","注意",r=>Object.keys(FLAGS).filter(k=>r._f[k]).length*-1]
 ];
 function renderHead(){
   $("thead").innerHTML=COLS.map(([k,l])=>`<th data-k="${k}" aria-sort="${sort.key===k?(sort.dir>0?"ascending":"descending"):"none"}">${l}</th>`).join("");
@@ -248,7 +270,7 @@ function renderTable(){
       <td>${r["担当者"]?esc(r["担当者"]):'<span class="muted">未設定</span>'}</td>
       <td><span class="badge s-${s}">${r["対応状況"]}</span></td>
       <td class="${r._f.overdue?"late":""}">${due}</td>
-      <td>${r["次の対応"]?esc(r["次の対応"]):'<span class="muted">—</span>'}</td>
+      <td>${r._nc?`<span class="ncat p${NEXT_CATS[NCI[r._nc]].p}">${esc(r._nc)}</span>`:""}${r["次の対応"]?esc(r["次の対応"]):'<span class="muted">—</span>'}</td>
       <td class="${r._f.nextlate?"late":""}">${d10(r["次回対応予定日"])||'<span class="muted">—</span>'}</td>
       <td>${fl.join("")||'<span class="muted">—</span>'}</td></tr>`;
     if(open.has(id))h+=`<tr class="detail"><td colspan="${COLS.length}"><dl>
@@ -266,15 +288,16 @@ function fillSelects(){
   $("f-status").innerHTML=opt("open","状況：未完了")+opt("all","状況：すべて")+STATUSES.map(([s])=>opt(s,"状況："+s)).join("");
   $("f-cat").innerHTML=opt("","分類：すべて")+CATS.map(c=>opt(c,c)).join("");
   $("f-owner").innerHTML=opt("","担当者：すべて")+OWNERS.map(c=>opt(c,c)).join("")+opt("(未設定)","担当者：未設定");
+  $("f-next").innerHTML=opt("","次の対応：すべて")+NEXT_CATS.map(c=>opt(c.n,"次の対応："+c.n)).join("");
   $("f-flag").innerHTML=opt("","注意：すべて")+Object.entries(FLAGS).map(([k,l])=>opt(k,"注意："+l)).join("");
 }
 function sync(){
-  $("f-status").value=F.status;$("f-cat").value=F.cat;$("f-owner").value=F.owner;$("f-flag").value=F.flag;
+  $("f-status").value=F.status;$("f-cat").value=F.cat;$("f-owner").value=F.owner;$("f-next").value=F.next;$("f-flag").value=F.flag;
   renderKpis();renderCharts();renderTable();
 }
-[["f-status","status"],["f-cat","cat"],["f-owner","owner"],["f-flag","flag"]].forEach(([id,k])=>$(id).onchange=e=>{F[k]=e.target.value;sync()});
+[["f-status","status"],["f-cat","cat"],["f-owner","owner"],["f-next","next"],["f-flag","flag"]].forEach(([id,k])=>$(id).onchange=e=>{F[k]=e.target.value;sync()});
 $("f-q").oninput=e=>{F.q=e.target.value.trim();renderTable()};
-$("reset").onclick=()=>{F={status:"open",cat:"",owner:"",flag:"",q:""};$("f-q").value="";sync()};
+$("reset").onclick=()=>{F={status:"open",cat:"",owner:"",next:"",flag:"",q:""};$("f-q").value="";sync()};
 $("base").onchange=e=>{base=e.target.value||todayStr();enrich();sync()};
 $("today").onclick=()=>{base=todayStr();$("base").value=base;enrich();sync()};
 
